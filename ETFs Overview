@@ -1,0 +1,76 @@
+WITH base_info AS (
+    SELECT issuer, etf_ticker, percentage_fee, address_source
+    FROM (VALUES
+        (get_href('https://etfs.grayscale.com/gbtc', 'Grayscale'), 'GBTC', 0.015, get_href('https://platform.arkhamintelligence.com/explorer/entity/grayscale', '🟠'))
+        , (get_href('https://www.blackrock.com/us/financial-professionals/investment-strategies/bitcoin-investing', 'BlackRock'), 'IBIT', 0.0025, get_href('https://platform.arkhamintelligence.com/explorer/entity/blackrock', '🟠'))
+        , (get_href('https://www.fidelity.com/etfs/fbtc', 'Fidelity'), 'FBTC', 0.0025, get_href('https://platform.arkhamintelligence.com/explorer/entity/fidelity', '🟠'))
+        , (get_href('https://21shares.com/en-US/product/ARKB', '21Shares'), 'ARKB', 0.0021, get_href('https://platform.arkhamintelligence.com/explorer/entity/ark-invest', '🟠'))
+        , (get_href('https://bitbetf.com/', 'Bitwise'), 'BITB', 0.002, get_href('https://bitbetf.com/', '🟢'))
+        , (get_href('https://www.invesco.com/us/en/etf/galaxy-bitcoin-btco.html', 'Invesco'), 'BTCO', 0.0025, get_href('https://platform.arkhamintelligence.com/explorer/entity/invesco', '🟠'))
+        , (get_href('https://www.vaneck.com/us/en/investments/bitcoin-trust-hodl/overview/', 'VanEck'), 'HODL', 0.0025, get_href('https://platform.arkhamintelligence.com/explorer/entity/vaneck', '🟠'))
+        , (get_href('https://valkyrieinvest.com/brrr/', 'Valkyrie'), 'BRRR', 0.0025, get_href('https://platform.arkhamintelligence.com/explorer/entity/valkyrie', '🟠'))
+        , (get_href('https://www.franklintempleton.com/strategies/bitcoin-etf', 'Franklin Templeton'), 'EZBC', 0.0019, get_href('https://platform.arkhamintelligence.com/explorer/entity/franklin-templeton', '🟠'))
+        , (get_href('https://www.wisdomtree.com/investments/etfs/crypto/btcw', 'WisdomTree'), 'BTCW', 0.0030, get_href('https://platform.arkhamintelligence.com/explorer/entity/wisdomtree', '🟠'))
+        ) AS t(issuer, etf_ticker, percentage_fee, address_source)
+    ORDER BY address_source, percentage_fee DESC
+    )
+
+, tvl AS (
+    SELECT f.issuer
+    , f.etf_ticker
+    , SUM(f.amount) AS tvl
+    FROM (
+        SELECT i.block_time
+        , issuer
+        , etf_ticker
+        , 'deposit' AS flow_type
+        , i.value AS amount
+        FROM bitcoin.outputs i
+        INNER JOIN query_3378085 -- Known ETF address list
+            a ON a.address=i.address
+        WHERE i.value > 0
+        AND i.block_time > date('2019-07-24')
+        AND i.block_time < NOW() - interval '6' hour
+        
+        UNION ALL
+        
+        SELECT i.block_time
+        , issuer
+        , etf_ticker
+        , 'withdrawal' AS flow_type
+        , -1*i.value AS amount
+        FROM bitcoin.inputs i
+        INNER JOIN query_3378085 -- Known ETF address list
+            a ON a.address=i.address
+        WHERE i.value > 0
+        AND i.block_time > date('2019-07-24')
+        AND i.block_time < NOW() - interval '6' hour
+        ) f
+    GROUP BY 1, 2
+    )
+
+, totals AS (
+    SELECT bi.issuer
+    , COALESCE(CAST(t.tvl AS varchar), '⁉️') AS tvl
+    , CAST(t.tvl AS double) AS tvl_double
+    , t.tvl*pu.price AS usd_value
+    --, COALESCE(CAST(t.usd_value AS varchar), '⁉️') AS usd_value
+    , bi.etf_ticker
+    , bi.percentage_fee
+    , bi.address_source
+    FROM base_info bi
+    LEFT JOIN tvl t ON t.etf_ticker=bi.etf_ticker
+    LEFT JOIN prices.usd_latest pu ON pu.blockchain IS NULL
+        AND pu.symbol = 'BTC'
+    ORDER BY t.tvl DESC, bi.address_source
+    )
+
+SELECT issuer
+, tvl
+, usd_value
+, CASE WHEN tvl != '⁉️' THEN tvl_double/(SELECT SUM(tvl_double) FROM totals) ELSE NULL END AS percentage_of_total
+, etf_ticker
+, percentage_fee
+, address_source
+FROM totals
+ORDER BY tvl_double DESC, address_source
